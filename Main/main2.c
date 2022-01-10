@@ -11,7 +11,6 @@ int main(){
     printf("----");
     recvS(allo, message, 100);
     sendS(allo, message, 100);
-    CreateThread
     printf("----");
     printf("%s", message);
     printf("----");
