@@ -88,7 +88,6 @@ void *acceptS(void *sock, char *ipOut, unsigned short *portOut){
     struct sockaddr_in client_addr;
     int len = sizeof(struct sockaddr_in);
     *csock = accept(*(int *) sock, (struct sockaddr *)&client_addr, (socklen_t*)&len);
-    printf("aaaaa-");
     struct in_addr ipAddr = client_addr.sin_addr;
     //inet_ntop result 1 on success
     inet_ntop(AF_INET, &ipAddr, ipOut, INET_ADDRSTRLEN);

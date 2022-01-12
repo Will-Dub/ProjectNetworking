@@ -8,6 +8,7 @@
 #include<unistd.h>
 #include "Linux/socket.h"
 
+// Struct that store thread info
 struct Thread{
     pthread_t ptid;
     time_t start;
@@ -15,30 +16,46 @@ struct Thread{
     short admin;
 };
 
+// Struct used as a node in a list
 struct ThreadNode{
     struct ThreadNode* before_thread;
     struct Thread currentThread;
     struct ThreadNode* next_thread;
 };
 
+// Struct used as argument for connection_handler
+struct Connection_handler_struct{
+    char ip[16];
+    unsigned short port;
+    int clientSocketId;
+    struct ThreadNode* curNode;
+};
 
-void* connection_handler(void* currThread){
-    printf("\n Thread created successfully\n");
-    puts("Connection accepted");
-    ((struct Thread*)currThread)->last_msg = time(NULL);
+
+// Function that handle each connection
+void* connection_handler(void* clientArgs){
+    char ip[16] = {0};
+    unsigned short port = ((struct Connection_handler_struct *)clientArgs)->port;
+    struct ThreadNode* curNode = ((struct Connection_handler_struct *)clientArgs)->curNode;
+    strcpy(ip, ((struct Connection_handler_struct *)clientArgs)->ip);
+    int clientSocketId = ((struct Connection_handler_struct *)clientArgs)->clientSocketId;
+    free(clientArgs);
+    printf("\nD-Thread created successfully\n");
+    printf("\nI-New connection. Ip:%s, Port:%d\n", ip, port);
+    char message[] = "WELCOME!!!";
     while(1==1){
+        sendS((void *)&clientSocketId, message, sizeof(message));
+        recvS((void *)&clientSocketId, message, sizeof(message));
+        printf("Message from %s: %s", ip, message);
+        //((struct ThreadNode*)currNode)->last_msg = time(NULL);
         sleep(1);
-        printf("a");
+        break;
     }
-    printf("bbbbbbbbbbb");
-    //Reply to the client
-    //sendS(csock, message, sizeof(message));
-    //recvS(csock, message, sizeof(message));
-    //printf("%s", message);
     return NULL;
 }
 
 
+// This funtion go through all thread and kill inactive ones
 void* garbage_collector_threat(void* startThreadNode){
     // Define variable
     struct ThreadNode *temp;
@@ -68,8 +85,9 @@ void* garbage_collector_threat(void* startThreadNode){
                     }else{
                         printf("D-Thread %d has ended.", curNode->currentThread.ptid);
                     }
-                    // Free the space and set curNode back
+                    // Free curNode
                     free(curNode);
+                    //Set curNode one node back
                     curNode = temp;
                 }
             }
@@ -85,9 +103,6 @@ int main(){
     //Define threat related variable
     struct ThreadNode* startThreadNode = (struct ThreadNode*)malloc(sizeof(struct ThreadNode));
     struct ThreadNode* endThread = startThreadNode;
-    startThreadNode->currentThread.admin = 1;
-    startThreadNode->before_thread = NULL;
-    startThreadNode->next_thread = NULL;
     int err;
     // Define server related variable
     void *serverSocketId;
@@ -97,17 +112,28 @@ int main(){
     //Start socket and listen
     serverSocketId = initS("192.168.2.116", 9666, 0);
     listenS(serverSocketId);
-    //Start the function that filter inactive connection
+    //Start a function that filter inactive connection as thread and define some variable
+    startThreadNode->currentThread.admin = 1;
+    startThreadNode->before_thread = NULL;
+    startThreadNode->next_thread = NULL;
     pthread_create(&(startThreadNode->currentThread.ptid), NULL, &garbage_collector_threat, (void *)(startThreadNode));
+    //Basic loop that allow connection and affect the to a thread
     while(1){
         if((clientSocketId = acceptS(serverSocketId, ip, port)) != NULL )
         {
             //Handle thread and socket
-            struct ThreadNode* clientNode = (struct ThreadNode*)malloc(sizeof(struct ThreadNode));
-            err = pthread_create(&(clientNode->currentThread.ptid), NULL, &connection_handler, (void *)&(clientNode->currentThread));
+            struct ThreadNode* clientNode = malloc(sizeof(struct ThreadNode));
+            struct Connection_handler_struct* clientArgs = malloc(sizeof(struct Connection_handler_struct));
+            clientArgs->port = *port;
+            clientArgs->curNode = clientNode;
+
+            clientArgs->clientSocketId = *((int *)clientSocketId);
+            strcpy(clientArgs->ip, ip);
+            err = pthread_create(&(clientNode->currentThread.ptid), NULL, &connection_handler, (void *)clientArgs);
             if (err != 0){
-                printf("\ncan't create thread :[%s]", strerror(err));
-                // Free space clientNode took
+                printf("\nD-Can't create thread :[%s]", strerror(err));
+                // Free clientNode and clientArgs
+                free(clientArgs);
                 free(clientNode);
             }
             else{
@@ -117,7 +143,7 @@ int main(){
                 clientNode->next_thread = NULL;
                 clientNode->currentThread.start = time(NULL);
                 clientNode->currentThread.last_msg = time(NULL);
-                // Modify endThread to point the last
+                // Modify endThread to point the last node
                 endThread = clientNode;
             }
         }
