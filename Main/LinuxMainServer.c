@@ -31,6 +31,31 @@ struct Connection_handler_struct{
     struct ThreadNode* curNode;
 };
 
+int seperatePasswordAndUser(char *username_and_password, char* username, char* password){
+    int i, f = 0;
+    for(i=0;f==0 && i<=19;i++){
+        if(username_and_password[i] != '-'){
+            username[i] = username_and_password[i];
+        }else{
+            f=1;
+        }
+    }
+    if(f==0){
+        return 1;
+    }
+    username[i] = '\0';
+    for(f=0;(f!=-1 && f<=29 && i<=49);i++, f++){
+        password[f] = username_and_password[i];
+        if(username_and_password[i] == '\0'){
+            f=-2;
+        }
+    }
+    if(f<0){
+        return 2;
+    }
+    return 0;
+}
+
 
 // Function that handle each connection
 void* connection_handler(void* clientArgs){
@@ -40,17 +65,25 @@ void* connection_handler(void* clientArgs){
     strcpy(ip, ((struct Connection_handler_struct *)clientArgs)->ip);
     int clientSocketId = ((struct Connection_handler_struct *)clientArgs)->clientSocketId;
     free(clientArgs);
-    printf("\nD-Thread created successfully\n");
+    ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
     printf("\nI-New connection. Ip:%s, Port:%d\n", ip, port);
-    char message[] = "WELCOME!!!";
+    char message[] = "Welcome to the server";
+    char username_and_password[50] = {0};
+    // Can be optimised using malloc
+    char username[20] = {0};
+    char password[30] = {0};
     while(1==1){
+        recvS((void *)&clientSocketId, username_and_password, sizeof(username_and_password));
+        seperatePasswordAndUser(username_and_password, username, password);
+        printf("Username: %s", username);
+        printf("Password: %s", password);
         sendS((void *)&clientSocketId, message, sizeof(message));
         recvS((void *)&clientSocketId, message, sizeof(message));
         printf("Message from %s: %s", ip, message);
-        //((struct ThreadNode*)currNode)->last_msg = time(NULL);
         sleep(1);
         break;
     }
+    //closeS((void *)&clientSocketId);
     return NULL;
 }
 
@@ -64,15 +97,16 @@ void* garbage_collector_threat(void* startThreadNode){
     time_t current;
     while(1){
         // Time that will elpaps after each iteration
-        sleep(1);
+        sleep(60);
         curNode=(struct ThreadNode *)startThreadNode;
         // Verify there is not only the default thread
         if(curNode->next_thread != NULL){
             current = time(NULL);
             curNode = curNode->next_thread;
-            // Use this condition to iterate until there is a Null pointer
+            printf("D-Removing inactive connection...", curNode->currentThread.ptid);
+            // Iterate until there is a Null pointer
             while(curNode->next_thread != NULL){
-                if(curNode->currentThread.admin != 1 && difftime(current, curNode->currentThread.last_msg) >= 5){
+                if(curNode->currentThread.admin != 1 && difftime(current, curNode->currentThread.last_msg) >= 30){
                     temp = curNode->before_thread;
                     // Modify the previous node and the next one
                     curNode->next_thread->before_thread = curNode;
@@ -91,8 +125,7 @@ void* garbage_collector_threat(void* startThreadNode){
                     curNode = temp;
                 }
             }
-            //Display number of thread
-            printf("D-There is currently %d thread", curNode->currentThread.ptid);
+            printf("D-Inactive connection removed");
         }
     }
     
@@ -122,11 +155,10 @@ int main(){
         if((clientSocketId = acceptS(serverSocketId, ip, port)) != NULL )
         {
             //Handle thread and socket
-            struct ThreadNode* clientNode = malloc(sizeof(struct ThreadNode));
+            struct ThreadNode* clientNode = calloc(sizeof(struct ThreadNode));
             struct Connection_handler_struct* clientArgs = malloc(sizeof(struct Connection_handler_struct));
             clientArgs->port = *port;
             clientArgs->curNode = clientNode;
-
             clientArgs->clientSocketId = *((int *)clientSocketId);
             strcpy(clientArgs->ip, ip);
             err = pthread_create(&(clientNode->currentThread.ptid), NULL, &connection_handler, (void *)clientArgs);

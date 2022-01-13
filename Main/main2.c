@@ -6,11 +6,10 @@
 #include "Linux/socket.h"
 int main(){
     void *allo;
-    char message[100] = {0};
+    char message[100] = "William-M2A1X";
     allo = initS("192.168.2.116", 9666, 1);
-    printf("----");
-    recvS(allo, message, 100);
     sendS(allo, message, 100);
+    recvS(allo, message, 100);
     printf("----");
     printf("%s", message);
     printf("----");
