@@ -6,6 +6,7 @@
 #include <time.h>
 #include<stdlib.h>
 #include<unistd.h>
+#include "Encryption/sha256.h"
 #include "Linux/socket.h"
 
 // Struct that store thread info
@@ -16,6 +17,14 @@ struct Thread{
     short admin;
 };
 
+void sha256_encode(char *text, int len)
+{
+	SHA256_CTX ctx;
+	int idx;
+	sha256_init(&ctx);
+	sha256_update(&ctx, text, len);
+	sha256_final(&ctx, text);
+}
 
 // Struct used as a node in a list
 struct ThreadNode{
@@ -49,7 +58,7 @@ int seperatePasswordAndUser(char *username_and_password, char* username, char* p
         return 1;
     }
     username[i] = '\0';
-    for(f=0;(f!=-1 && f<=29 && i<=49);i++, f++){
+    for(f=0;(f!=-1 && f<=32 && i<=44);i++, f++){
         password[f] = username_and_password[i];
         if(username_and_password[i] == '\0'){
             f=-2;
@@ -79,22 +88,29 @@ void* connection_handler(void* clientArgs){
     ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
     printf("I-New connection. Ip:%s, Port:%d\n", ip, port);
 
-    // Allocate 42 bytes for the username and password
-    char username_and_password[42] = {0};
+    // Allocate 44 bytes for the username and password
+    char username_and_password[45] = {0};
 
     // **The following lines can be optimised using malloc**
     char username[13] = {0};
-    char password[30] = {0};
+    unsigned char password[33] = {0};
     while(1==1){
         recvS((void *)&clientSocketId, username_and_password, sizeof(username_and_password));
         if(seperatePasswordAndUser(username_and_password, username, password) != 0){
-            printf("The username or the password is too long");
+            //Exit username of password too long
             // Exit thread
         }
         char message[] = "Welcome to the server";
+        printf("---Password: %s---\n", password);
+        sha256_encode(password, strlen(password));
         printf("Username: %s", username);
-        printf("Password: %s", password);
-        char *queryConn = (char *)malloc(150);
+        printf("---Password: %s---\n", password);
+        int i = 0;
+        while(i<32){
+            printf("-%d-", password[i]);
+            i++;
+        }
+        char *queryConn = (char *)malloc(200);
         sprintf(queryConn, "SELECT `UserId`, `Type` FROM `Account` WHERE `User`='%s' AND `Password`='%s'", username, password);
         if (mysql_query(mysqlCon, queryConn))
         {
@@ -106,25 +122,25 @@ void* connection_handler(void* clientArgs){
         MYSQL_RES *result = mysql_store_result(mysqlCon);
         if (result == NULL)
         {
-            printf("I-%s, tried to connect to user:%s and failed", ip, username);
+            printf("I-%s, tried to connect to user:%s and failed\n", ip, username);
             break;
             //finish_with_error(con);
         }
 
 
         int num_fields = mysql_num_fields(result);
-        printf("---%d----", num_fields);
+        printf("---%d----\n", num_fields);
         
         MYSQL_ROW row;
         row = mysql_fetch_row(result);
         if(row == NULL){
-            printf("I-%s, tried to connect to user:%s and failed", ip, username);
+            printf("I-%s, tried to connect to user:%s and failed\n", ip, username);
             break;
         }
-        printf("---%s---", row[0]);
+        printf("---%s---\n", row[0]);
         sendS((void *)&clientSocketId, message, sizeof(message));
         recvS((void *)&clientSocketId, message, sizeof(message));
-        printf("Message from %s: %s", ip, message);
+        printf("Message from %s: %s\n", ip, message);
         sleep(1);
         
         break;
@@ -154,7 +170,7 @@ void* garbage_collector_threat(void* startThreadNode){
         if(curNode->next_thread != NULL){
             current = time(NULL);
             curNode = curNode->next_thread;
-            printf("D-Trying to find inactive connection...", curNode->currentThread.ptid);
+            printf("D-Trying to find inactive connection...\n", curNode->currentThread.ptid);
 
             // Iterate until there is a Null pointer
             while(curNode->next_thread != NULL){
@@ -163,14 +179,14 @@ void* garbage_collector_threat(void* startThreadNode){
                     // Modify the previous node and the next one
                     curNode->next_thread->before_thread = curNode;
                     curNode->next_thread->before_thread = curNode;
-                    printf("D-Ending thread %d...", curNode->currentThread.ptid);
+                    printf("D-Ending thread %d...\n", curNode->currentThread.ptid);
 
                     // End thread and look up for error to log them
                     rc = pthread_cancel(curNode->currentThread.ptid);
                     if(rc){
                         printf("D-Failed to cancel the thread %d\n", curNode->currentThread.ptid);
                     }else{
-                        printf("D-Thread %d has ended.", curNode->currentThread.ptid);
+                        printf("D-Thread %d has ended\n", curNode->currentThread.ptid);
                     }
                     
                     // Free curNode
@@ -180,7 +196,7 @@ void* garbage_collector_threat(void* startThreadNode){
                     curNode = temp;
                 }
             }
-            printf("D-Inactive connection removed");
+            printf("D-Inactive connection removed\n");
         }
     }
     
@@ -193,18 +209,18 @@ int main(){
 
     if (mysqlCon == NULL)
     {
-        printf("Error while initialising variable mysqlCon");
+        printf("Error while initialising variable mysqlCon\n");
     }
 
     if (mysql_real_connect(mysqlCon, "localhost", "test", "123",
             "Main", 0, NULL, 0) == NULL)
     {
-        printf("No connection to mysql server");
+        printf("Can't connect to mysql server\n");
         mysql_close(mysqlCon);
     }
 
     //Define threat related variable
-    struct ThreadNode* startThreadNode = (struct ThreadNode*)malloc(sizeof(struct ThreadNode));
+    struct ThreadNode* startThreadNode = malloc(sizeof(struct ThreadNode));
     struct ThreadNode* endThread = startThreadNode;
     int err;
 
@@ -239,7 +255,7 @@ int main(){
             err = pthread_create(&(clientNode->currentThread.ptid), NULL, &connection_handler, (void *)clientArgs);
             
             if (err != 0){
-                printf("\nD-Can't create thread :[%s]", strerror(err));
+                printf("\nD-Can't create thread :[%s]\n", strerror(err));
                 // Free clientNode and clientArgs
                 free(clientArgs);
                 free(clientNode);

@@ -6,7 +6,7 @@
 #include "Linux/socket.h"
 int main(){
     void *allo;
-    char message[100] = "william-M4XM";
+    char message[100] = "william-123";
     allo = initS("192.168.2.116", 9666, 1);
     sendS(allo, message, 100);
     recvS(allo, message, 100);
