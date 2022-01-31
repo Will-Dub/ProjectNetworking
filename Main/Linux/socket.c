@@ -71,16 +71,18 @@ int sendS(void *sock, char buffer[], int buff_size){
 }
 
 int listenS(void *sock){
-    if(listen(*(int *) sock, 5) != 0){
+    if(listen(*(int *) sock, 2) != 0){
         puts("E. Listening");
         return 1;
     }
     return 0;
 }
 
-void closeS(void *sock){
+void closeS(void *sock, char freeBool){
     close(*(int *) sock);
-    free(sock);
+    if(freeBool == 1){
+        free(sock);
+    }
 }
 
 void *acceptS(void *sock, char *ipOut, unsigned short *portOut){

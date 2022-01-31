@@ -63,10 +63,12 @@ int sendS(void *sock, char buffer[], int buff_size){
     return 0;
 }
 
-void closeS(void *sock)
+void closeS(void *sock, char freeBool)
 {
     closesocket(*(SOCKET *)sock);
-    free(sock);
+    if(freeBool==1){
+        free(sock);
+    }
     WSACleanup();
 }
 
