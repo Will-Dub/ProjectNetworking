@@ -35,16 +35,17 @@ struct Connection_handler_struct{
     int clientSocketId;
     struct ThreadNode* curNode;
     MYSQL *mysqlCon;
+    struct ThreadNode* startNode;
 };
 
 
 // This function hash the text and return it in the same pointer
-void sha256_hash(char *text, int len)
+void sha256_hash(char **text, int len)
 {
 	SHA256_CTX ctx;
 	sha256_init(&ctx);
-	sha256_update(&ctx, text, len);
-	sha256_final(&ctx, text);
+	sha256_update(&ctx, *text, len);
+	sha256_final(&ctx, *text);
 }
 
 
@@ -77,28 +78,28 @@ void exitThreadAndConn(struct ThreadNode *curNode, char doExit){
 }
 
 
-//  The function seperate the username and the password from a received string
-int seperatePasswordAndUser(char *username_and_password, char* username, char* password){
+//  The function seperate two arguments
+int seperateTwoArgs(char wholeString[], char** firstOut, int firstStringSize, char** secondOut, int secondStringSize){
     int i, f = 0;
-    for(i=0;f==0 && i<=12;i++){
-        if(username_and_password[i] != '\n'){
-            username[i] = username_and_password[i];
-        }else{
+    for(i=0;f==0 && i<firstStringSize;i++){
+        printf("%c", wholeString[i]);
+        if(wholeString[i] == '\n'){
+            wholeString[i] = '\0';
             f=1;
         }
     }
+    // Quit, no newline detected
     if(f!=1){
         return 1;
     }
-    username[i] = '\0';
-    for(f=0;(f!=-1 && f<=32 && i<=44);i++, f++){
-        password[f] = username_and_password[i];
-        if(username_and_password[i] == '\0'){
-            password[f] = username_and_password[i];
-            f=-2;
-        }
-    }
-    if(f>0){
+    *firstOut = wholeString;
+    *secondOut = &(wholeString[i]);
+    f=0; 
+    do{
+        f++;
+    }while(wholeString[i+f] != '\0' && f<=secondStringSize);
+    
+    if(f>secondStringSize){
         return 2;
     }else{
         return 0;
@@ -108,19 +109,19 @@ int seperatePasswordAndUser(char *username_and_password, char* username, char* p
 
 
 // This function authenticate the user and log the connection
-int auth_client(char *username_and_password, char *username, char *password, char *ip, MYSQL *mysqlCon){
+int auth_client(char username_and_password[], char **username, char **password, char *ip, MYSQL *mysqlCon){
         // Seperate the user and the password from the string
-        int a;
-        if(a = seperatePasswordAndUser(username_and_password, username, password) != 0){
+        if(seperateTwoArgs(username_and_password, username, 13, password, 33) != 0){
             printf("I-The string %s sent is wrongly formated\n", ip);
             return -1;
         }
+
         // Hash the password
-        sha256_hash(password, strlen(password));
+        sha256_hash(password, strlen(*password));
         char queryCon[120] = {0};
 
         // Perpare the mysql query
-        sprintf(queryCon, "SELECT `Type` FROM `Account` WHERE `User`='%s' AND `Password`='%s'", username, password);
+        sprintf(queryCon, "SELECT `Type` FROM `Account` WHERE `User`='%s' AND `Password`='%s'", *username, *password);
 
         // Execute the query and exit if there is an error
         if (mysql_query(mysqlCon, queryCon))
@@ -132,16 +133,18 @@ int auth_client(char *username_and_password, char *username, char *password, cha
         MYSQL_RES *result = mysql_store_result(mysqlCon);
         if (result == NULL)
         {
-            printf("I-%s, tried to connect to user:%s and failed\n", ip, username);
+            printf("I-%s, tried to connect to user:%s and failed\n", ip, *username);
             return -3;
         }
 
         MYSQL_ROW row;
         row = mysql_fetch_row(result);
 
+        
+
         // Exit if there is no user with this password or username
         if(row == NULL){
-            printf("I-%s, tried to connect to user:%s and failed\n", ip, username);
+            printf("I-%s, tried to connect to user:%s and failed\n", ip, *username);
             return -3;
         }
         
@@ -181,6 +184,7 @@ void* connection_handler(void* clientArgs){
     strcpy(ip, ((struct Connection_handler_struct *)clientArgs)->ip);
     int clientSocketId = ((struct Connection_handler_struct *)clientArgs)->clientSocketId;
     MYSQL *mysqlCon = ((struct Connection_handler_struct *)clientArgs)->mysqlCon;
+    struct ThreadNode* startNode = ((struct Connection_handler_struct *)clientArgs)->startNode;
 
     // Free the struct passed to the function
     free(clientArgs);
@@ -191,8 +195,8 @@ void* connection_handler(void* clientArgs){
 
     // Allocate 45 bytes for the username and password
     char username_and_password[45] = {0};
-    char username[13] = {0};
-    unsigned char password[33] = {0};
+    char *username = NULL;
+    char *password = NULL;
 
     // Receive the username and the password
     if(recvS((void *)&clientSocketId, username_and_password, sizeof(username_and_password)) == 1){
@@ -206,7 +210,7 @@ void* connection_handler(void* clientArgs){
     }
 
     // Authenticate the client and get his permission
-    int accountLevel = auth_client(username_and_password, username, password, ip, mysqlCon);
+    int accountLevel = auth_client(username_and_password, &username, &password, ip, mysqlCon);
     if(accountLevel<0){
         printf("Exit...");
         exitThreadAndConn(curNode, 1);
@@ -218,19 +222,26 @@ void* connection_handler(void* clientArgs){
     char message[] = "Welcome to the server, you are now connected!";
     sendS((void *)&clientSocketId, message, sizeof(message));
 
-    // in is for the received string and out for the output
+    // in is for the received string and out is for the output
     char in[256] = {0};
+    char *firstArg = NULL;
+    char *secondArg = NULL;
     char out[1024] = {0};
-    
+    /*
     while(1==1){
         if(recvS((void *)&clientSocketId, in, sizeof(in)) == 0){
-            // Set last interraction time
-            ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
+            if(seperateTwoArgs(in, firstArg, 128, secondArg, 128) != 0){
+                printf("!!!-%s--%s-!!!!!", firstArg, secondArg);
+                // Set last interraction time
+                ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
 
-            printf("I-Executing command from %s: %s\n", ip, in);
-            // Execute the command and send the output
-            if(exec_command(in, out, 1024) == 0){
-                sendS((void *)&clientSocketId, out, strlen(out));
+                printf("I-Executing command from %s: %s\n", ip, in);
+                // Execute the command and send the output
+                if(exec_command(in, out, 1024) == 0){
+                    sendS((void *)&clientSocketId, out, strlen(out));
+                }else{
+                sendS((void *)&clientSocketId, "An error occured or there is no output", 39);
+                }
             }
             else{
                 sendS((void *)&clientSocketId, "An error occured or there is no output", 39);
@@ -239,7 +250,7 @@ void* connection_handler(void* clientArgs){
             // An error occured while receiving so the thread exit
             break;
         }
-    }
+    }*/
 
     exitThreadAndConn(curNode, 1);
     
@@ -337,6 +348,7 @@ int main(){
             clientArgs->curNode = clientNode;
             clientArgs->clientSocketId = *((int *)clientSocketId);
             clientArgs->mysqlCon = mysqlCon;
+            clientArgs->startNode = startThreadNode;
             strcpy(clientArgs->ip, ip);
             err = pthread_create(&(clientNode->currentThread.ptid), NULL, &connection_handler, (void *)clientArgs);
 
