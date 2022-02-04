@@ -82,15 +82,16 @@ void exitThreadAndConn(struct ThreadNode *curNode, char doExit){
 int seperateTwoArgs(char wholeString[], char** firstOut, int firstStringSize, char** secondOut, int secondStringSize){
     int i, f = 0;
     for(i=0;f==0 && i<firstStringSize;i++){
-        printf("%c", wholeString[i]);
         if(wholeString[i] == '\n'){
             wholeString[i] = '\0';
             f=1;
+        }else if(wholeString[i] == '\0'){
+            return 1;
         }
     }
     // Quit, no newline detected
     if(f!=1){
-        return 1;
+        return 2;
     }
     *firstOut = wholeString;
     *secondOut = &(wholeString[i]);
@@ -100,7 +101,7 @@ int seperateTwoArgs(char wholeString[], char** firstOut, int firstStringSize, ch
     }while(wholeString[i+f] != '\0' && f<=secondStringSize);
     
     if(f>secondStringSize){
-        return 2;
+        return 3;
     }else{
         return 0;
     }
@@ -207,6 +208,7 @@ void* connection_handler(void* clientArgs){
     // Verify the string is not null
     if(username_and_password == ""){
         exitThreadAndConn(curNode, 1);
+        return NULL;
     }
 
     // Authenticate the client and get his permission
@@ -227,30 +229,55 @@ void* connection_handler(void* clientArgs){
     char *firstArg = NULL;
     char *secondArg = NULL;
     char out[1024] = {0};
-    /*
+    
+    // Listen for command and request
     while(1==1){
-        if(recvS((void *)&clientSocketId, in, sizeof(in)) == 0){
-            if(seperateTwoArgs(in, firstArg, 128, secondArg, 128) != 0){
-                printf("!!!-%s--%s-!!!!!", firstArg, secondArg);
-                // Set last interraction time
-                ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
+        command_wait:
 
-                printf("I-Executing command from %s: %s\n", ip, in);
-                // Execute the command and send the output
-                if(exec_command(in, out, 1024) == 0){
-                    sendS((void *)&clientSocketId, out, strlen(out));
-                }else{
-                sendS((void *)&clientSocketId, "An error occured or there is no output", 39);
+        // 1000 * nb of microsecond(1/2 a second)
+        usleep(500000);
+
+        // Exit if an error occured in the receive function
+        if(recvS((void *)&clientSocketId, in, sizeof(in)) == 0){
+            // Set last interraction time
+            ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
+
+            // Split the string sent in two arg
+            if(seperateTwoArgs(in, &firstArg, 2, &secondArg, 128) != 0){
+                if(sendS((void *)&clientSocketId, "Error, can't seperate the two argument", 39) != 0){
+                    break;
                 }
+                goto command_wait;
             }
-            else{
-                sendS((void *)&clientSocketId, "An error occured or there is no output", 39);
+
+            // the char must be between 32 and 255
+            printf("---%d---", *firstArg);
+
+            // Do a specific task depending on the first argument the client sent
+            switch (*firstArg)
+            {
+            //  'a'
+            case 'a':
+                printf("I-Executing command from %s: %s\n", ip, in);
+
+                // Execute the command and send the output
+                if(exec_command(secondArg, out, sizeof(out)) == 0){
+                    sendS((void *)&clientSocketId, out, strlen(out));
+                    break;
+                }
+
+                sendS((void *)&clientSocketId, "Error, there is no command with this name or there's no output", 63);
+                break;
+            
+            default:
+                sendS((void *)&clientSocketId, "Error in commandType", 21);
+                break;
             }
-        }else{
-            // An error occured while receiving so the thread exit
+
+        } else{
             break;
         }
-    }*/
+    }
 
     exitThreadAndConn(curNode, 1);
     
