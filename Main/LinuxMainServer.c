@@ -14,9 +14,7 @@
 struct Thread{
     pthread_t ptid;
     int socketId;
-    time_t start;
     time_t last_msg;
-    short admin;
 };
 
 
@@ -39,6 +37,13 @@ struct Connection_handler_struct{
 };
 
 
+// Struct used as argument for garbage_collector
+struct Garbage_collector_struct{
+    struct ThreadNode* startNode;
+    MYSQL *mysqlCon;
+};
+
+
 // This function hash the text and return it in the same pointer
 void sha256_hash(char **text, int len)
 {
@@ -50,12 +55,23 @@ void sha256_hash(char **text, int len)
 
 
 // This function is used to close the thread, remove it from the list and close the connection
-void exitThreadAndConn(struct ThreadNode *curNode, char doExit){
+void exitThreadAndConn(struct ThreadNode *curNode, char doExit, MYSQL *mysqlCon){
     // Modify the previous node and the next one
     if(curNode->next_node != NULL){
         (curNode->next_node)->before_node = curNode->before_node;
     }
     (curNode->before_node)->next_node = curNode->next_node;
+
+    // Remove the connection from the ActiveConnection mysql table
+    char mysqlQuery[70];
+    // Perpare the mysql query
+    sprintf(mysqlQuery, "DELETE FROM `ActiveConnection` WHERE `clientSocketId` = %d", curNode->currentThread.socketId);
+
+    // Execute the query and exit if there is an error
+    if (mysql_query(mysqlCon, mysqlQuery))
+    {
+        printf("E-Error with the mysql server\n");
+    }
 
     // End the connection between the server and the client
     closeS((void *)&(curNode->currentThread.socketId), 0);
@@ -109,8 +125,40 @@ int seperateTwoArgs(char wholeString[], char** firstOut, int firstStringSize, ch
 }
 
 
+// Return the first row of a mysql query
+MYSQL_ROW simpleMysqlQuery(MYSQL *mysqlCon, char *mysqlQuery){
+
+    // Execute the query and exit if there is an error
+    if (mysql_query(mysqlCon, mysqlQuery))
+    {
+        printf("E-Error with the mysql server\n");
+        return NULL;
+    }
+
+    MYSQL_RES *result = mysql_store_result(mysqlCon);
+
+    if (result == NULL)
+    {
+        printf("I-Can't find the element\n");
+        return NULL;
+    }
+
+    MYSQL_ROW row;
+    row = mysql_fetch_row(result);
+
+    // Exit if there is no user with this password or username
+    if(row == NULL){
+        printf("I-There is no row with this name\n");
+        return NULL;
+    }
+    
+    // Return user's permission and convert the string -> int
+    return row;
+}
+
+
 // This function authenticate the user and log the connection
-int auth_client(char username_and_password[], char **username, char **password, char *ip, MYSQL *mysqlCon){
+int auth_client(char username_and_password[], char **username, char **password, char *ip, MYSQL *mysqlCon, char *mysqlQuery){
         // Seperate the user and the password from the string
         if(seperateTwoArgs(username_and_password, username, 13, password, 33) != 0){
             printf("I-The string %s sent is wrongly formated\n", ip);
@@ -119,36 +167,18 @@ int auth_client(char username_and_password[], char **username, char **password, 
 
         // Hash the password
         sha256_hash(password, strlen(*password));
-        char queryCon[120] = {0};
 
         // Perpare the mysql query
-        sprintf(queryCon, "SELECT `Type` FROM `Account` WHERE `User`='%s' AND `Password`='%s'", *username, *password);
+        sprintf(mysqlQuery, "SELECT `Type` FROM `Account` WHERE `User`='%s' AND `Password`='%s'", *username, *password);
 
-        // Execute the query and exit if there is an error
-        if (mysql_query(mysqlCon, queryCon))
-        {
-            printf("E-Error with the mysql server\n");
-            return -2;
-        }
-
-        MYSQL_RES *result = mysql_store_result(mysqlCon);
-        if (result == NULL)
-        {
-            printf("I-%s, tried to connect to user:%s and failed\n", ip, *username);
-            return -3;
-        }
-
+        // Execute the query and get the result
         MYSQL_ROW row;
-        row = mysql_fetch_row(result);
+        row = simpleMysqlQuery(mysqlCon, mysqlQuery);
 
-        
-
-        // Exit if there is no user with this password or username
         if(row == NULL){
-            printf("I-%s, tried to connect to user:%s and failed\n", ip, *username);
-            return -3;
+            return 0;
         }
-        
+
         // Return user's permission and convert the string -> int
         return atoi(row[0]);
 }
@@ -156,7 +186,7 @@ int auth_client(char username_and_password[], char **username, char **password, 
 
 // This function execute a command and return the output
 int exec_command(char *in, char *out, int size){
-    FILE *fp;
+    FILE *fp = NULL;
     char line[128] = {0};
     fp = popen(in, "r");
     
@@ -178,20 +208,26 @@ int exec_command(char *in, char *out, int size){
 
 // Function that handle each connection
 void* connection_handler(void* clientArgs){
-    // Get the variable passed to the function and store them
+    // Set the ip and port in the function
     char ip[16] = {0};
-    unsigned short port = ((struct Connection_handler_struct *)clientArgs)->port;
-    struct ThreadNode* curNode = ((struct Connection_handler_struct *)clientArgs)->curNode;
     strcpy(ip, ((struct Connection_handler_struct *)clientArgs)->ip);
+    unsigned short port = ((struct Connection_handler_struct *)clientArgs)->port;
+
+    // Set the other variable
+    struct ThreadNode* curNode = ((struct Connection_handler_struct *)clientArgs)->curNode;
     int clientSocketId = ((struct Connection_handler_struct *)clientArgs)->clientSocketId;
     MYSQL *mysqlCon = ((struct Connection_handler_struct *)clientArgs)->mysqlCon;
+    
     struct ThreadNode* startNode = ((struct Connection_handler_struct *)clientArgs)->startNode;
 
     // Free the struct passed to the function
     free(clientArgs);
 
+    char mysqlQuery[256] = {0};
+
     // Define time of the last interraction
     ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
+
     printf("I-New connection. Ip:%s, Port:%d\n", ip, port);
 
     // Allocate 45 bytes for the username and password
@@ -201,26 +237,30 @@ void* connection_handler(void* clientArgs){
 
     // Receive the username and the password
     if(recvS((void *)&clientSocketId, username_and_password, sizeof(username_and_password)) == 1){
-        printf("Quitting...");
-        exitThreadAndConn(curNode, 1);
-    }
-
-    // Verify the string is not null
-    if(username_and_password == ""){
-        exitThreadAndConn(curNode, 1);
+        exitThreadAndConn(curNode, 1, mysqlCon);
         return NULL;
     }
 
     // Authenticate the client and get his permission
-    int accountLevel = auth_client(username_and_password, &username, &password, ip, mysqlCon);
-    if(accountLevel<0){
-        printf("Exit...");
-        exitThreadAndConn(curNode, 1);
+    int status = auth_client(username_and_password, &username, &password, ip, mysqlCon, mysqlQuery);
+    if(status<0){
+        printf("Exit...\n");
+        exitThreadAndConn(curNode, 1, mysqlCon);
         return NULL;
     }
+
     printf("I-%s connected to the user:%s successfully\n", ip, username);
 
-    // Send a success message
+    // Perpare the mysql query
+    sprintf(mysqlQuery, "INSERT INTO `ActiveConnection`(`clientSocketId`, `User`, `ip`, `port`) VALUES (%d, '%s', '%s', %d)", clientSocketId, username, ip, port);
+
+    // Execute the query and exit if there is an error
+    if (mysql_query(mysqlCon, mysqlQuery))
+    {
+        printf("E-Error with the mysql server\n");
+    }
+    
+    // Send a success message   
     char message[] = "Welcome to the server, you are now connected!";
     sendS((void *)&clientSocketId, message, sizeof(message));
 
@@ -240,11 +280,26 @@ void* connection_handler(void* clientArgs){
         // Exit if an error occured in the receive function
         if(recvS((void *)&clientSocketId, in, sizeof(in)) == 0){
             // Set last interraction time
-            ((struct ThreadNode*)curNode)->currentThread.last_msg = time(NULL);
+            ((struct ThreadNode *)curNode) ->currentThread.last_msg = time(NULL);
+
+            // Perpare the mysql query
+            sprintf(mysqlQuery, "SELECT `status` FROM `ActiveConnection` WHERE `clientSocketId` = '%d'", clientSocketId);
+
+            // Get the status
+            MYSQL_ROW row;
+            row = simpleMysqlQuery(mysqlCon, mysqlQuery);
+
+            if(row == NULL){
+                printf("I-Row is NULL\n");
+                break;
+            }
+
+            // Return user's permission and convert the string -> int
+            status = atoi(row[0]);
 
             // Split the string sent in two arg
-            if(seperateTwoArgs(in, &firstArg, 2, &secondArg, 128) != 0){
-                if(sendS((void *)&clientSocketId, "Error, can't seperate the two argument", 39) != 0){
+            if(seperateTwoArgs(in, &firstArg, 2, &secondArg, 254) != 0){
+                if(sendS((void *)&clientSocketId, "Error, can't seperate the two argument\n", 39) != 0){
                     break;
                 }
                 goto command_wait;
@@ -256,9 +311,10 @@ void* connection_handler(void* clientArgs){
             // Do a specific task depending on the first argument the client sent
             switch (*firstArg)
             {
-            //  'a'
+
+            // Execute a command and send back the output
             case 'a':
-                printf("I-Executing command from %s: %s\n", ip, in);
+                printf("I-Executing command from %s: %s\n", ip, secondArg);
 
                 // Execute the command and send the output
                 if(exec_command(secondArg, out, sizeof(out)) == 0){
@@ -268,9 +324,40 @@ void* connection_handler(void* clientArgs){
 
                 sendS((void *)&clientSocketId, "Error, there is no command with this name or there's no output", 63);
                 break;
+
+            // Send a list of all the active connection
+            case 'b':
+
+                sprintf(mysqlQuery, "SELECT `User`, `ip`, `status` FROM `ActiveConnection` LIMIT %d,%d", atoi(secondArg), atoi(secondArg)+10);
+                printf("%s", mysqlQuery);
+
+                // Execute the query and exit if there is an error
+                if (mysql_query(mysqlCon, mysqlQuery))
+                {
+                    printf("E-Error with the mysql server\n");
+                    return NULL;
+                }
+
+                MYSQL_RES *result = mysql_store_result(mysqlCon);
+
+                if (result == NULL)
+                {
+                    strcpy(out, "Nothing");
+                }else{
+                    MYSQL_ROW row = NULL;
+                    row = mysql_fetch_row(result);
+                    if(row == NULL){
+                        strcpy(out, "Cursed");
+                    }else{
+                        sprintf(out, "%s\n%s\n%d", row[0], row[1], row[2]);
+                    }
+                }
+                printf("%s", out);
+                sendS((void *)&clientSocketId, out, strlen(out));
+                break;
             
             default:
-                sendS((void *)&clientSocketId, "Error in commandType", 21);
+                sendS((void *)&clientSocketId, "Error, command type is unknown", 31);
                 break;
             }
 
@@ -279,20 +366,25 @@ void* connection_handler(void* clientArgs){
         }
     }
 
-    exitThreadAndConn(curNode, 1);
-    
-    
-    //closeS((void *)&clientSocketId);
+    exitThreadAndConn(curNode, 1, mysqlCon);
+
     return NULL;
 }
 
 
 // This funtion go through all thread and kill inactive ones
-void* garbage_collector_threat(void* startThreadNode){
+void* garbage_collector(void* garbage_collector_arg){
+    // Assign the argument received to permanent variable
+    struct ThreadNode *startThreadNode =((struct Garbage_collector_struct *)garbage_collector_arg)->startNode;
+    MYSQL *mysqlCon = ((struct Garbage_collector_struct *)garbage_collector_arg)->mysqlCon;
+    
+    // Free the received struct
+    free(garbage_collector_arg);
+
     // Define variable
     struct ThreadNode *curNode;
     int rc = 0;
-    time_t current;
+    time_t curTime;
 
     // This function should never stop until exit of the program
     while(1){
@@ -300,22 +392,21 @@ void* garbage_collector_threat(void* startThreadNode){
         sleep(420);
 
         // Set curNode back to the first node
-        curNode=(struct ThreadNode *)startThreadNode;
+        curNode = startThreadNode;
 
         // Verify there is not only the default thread
         if(curNode->next_node != NULL){
-            current = time(NULL);
-            curNode = curNode->next_node;
+            curTime = time(NULL);
             printf("I-Trying to find inactive connection...\n", curNode->currentThread.ptid);
 
             // Iterate until there is a Null pointer
-            while(curNode != NULL){
-                if(curNode->currentThread.admin != 1 && difftime(current, curNode->currentThread.last_msg) >= 420){
+            while(curNode->next_node != NULL){
+                curNode = curNode->next_node;
+                if(difftime(curTime, curNode->currentThread.last_msg) >= 420){
                     curNode = curNode->before_node;
-                    exitThreadAndConn(curNode->next_node, 0);
+                    exitThreadAndConn(curNode->next_node, 0, mysqlCon);
                 }
             }
-            printf("I-Inactive connection removed\n");
         }
     }
     
@@ -324,20 +415,32 @@ void* garbage_collector_threat(void* startThreadNode){
 
 // This function will be executed at the start
 int main(){
-    // Connect to mysql database
-    MYSQL *mysqlCon = mysql_init(NULL);
 
+    // Initialize the variable where the connection to mysql will be stored
+    MYSQL *mysqlCon = mysql_init(NULL);
     if (mysqlCon == NULL)
     {
         printf("E-Error while initialising variable mysqlCon\n");
+        return -1;
     }
 
+    // Connect to the mysql server
     if (mysql_real_connect(mysqlCon, "localhost", "test", "123",
             "Main", 0, NULL, 0) == NULL)
     {
         printf("E-Can't connect to the mysql server\n");
         mysql_close(mysqlCon);
+        return -2;
     }
+
+    // Delete the last ActiveConnection
+    if (mysql_query(mysqlCon, "DELETE FROM `ActiveConnection`"))
+    {
+        printf("E-Can't delete the last connections\n");
+        return -3;
+    }
+
+
 
     // Define thread related variable
     struct ThreadNode* startThreadNode = malloc(sizeof(struct ThreadNode));
@@ -348,22 +451,23 @@ int main(){
     void *serverSocketId;
     void *clientSocketId;
     char ip[16];
-    unsigned short *port = (unsigned short *)malloc(sizeof(short));
+    unsigned short port;
 
     // Start socket and listen
     serverSocketId = initS("192.168.2.116", 9666, 0);
     listenS(serverSocketId);
 
     // Start a function that filter inactive connection as thread and define some variable
-    startThreadNode->currentThread.admin = 1;
     startThreadNode->before_node = NULL;
     startThreadNode->next_node = NULL;
-    pthread_create(&(startThreadNode->currentThread.ptid), NULL, &garbage_collector_threat, (void *)(startThreadNode));
+    struct Garbage_collector_struct *garbage_collector_arg = malloc(sizeof(struct Garbage_collector_struct));
+    garbage_collector_arg->startNode = startThreadNode;
+    garbage_collector_arg->mysqlCon = mysqlCon;
+    pthread_create(&(startThreadNode->currentThread.ptid), NULL, &garbage_collector, (void *)(garbage_collector_arg));
 
     // Basic loop that allow connection and affect the to a thread
-    
     while(1){
-        if((clientSocketId = acceptS(serverSocketId, ip, port)) != NULL )
+        if((clientSocketId = acceptS(serverSocketId, ip, &port)) != NULL )
         {
             // 1000 * nb of microsecond(1/2 a second)
             usleep(500000);
@@ -371,7 +475,7 @@ int main(){
             // Handle thread and socket
             struct ThreadNode* clientNode = calloc(1, sizeof(struct ThreadNode));
             struct Connection_handler_struct* clientArgs = malloc(sizeof(struct Connection_handler_struct));
-            clientArgs->port = *port;
+            clientArgs->port = port;
             clientArgs->curNode = clientNode;
             clientArgs->clientSocketId = *((int *)clientSocketId);
             clientArgs->mysqlCon = mysqlCon;
@@ -392,8 +496,11 @@ int main(){
                 clientNode->before_node = endThread;
                 endThread->next_node = clientNode;
                 clientNode->next_node = NULL;
-                clientNode->currentThread.start = time(NULL);
+
+                // Set last msg time(Will be used to exit the thread if client is inactive)
                 clientNode->currentThread.last_msg = time(NULL);
+
+                // Set the client socketid(Used to close the socket when the thread exit)
                 clientNode->currentThread.socketId = *((int *)clientSocketId);
 
                 // Modify endThread to point the last node
